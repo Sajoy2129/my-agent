@@ -307,6 +307,11 @@ def main():
             print(f"⚠️  API problem ({type(error).__name__}). Please try again.")
             # Roll back this whole turn so no tool_use is left without a result.
             del messages[turn_start:]
+        except anthropic.APIError as error:
+            # Any other API failure (server error, bad request, ...).
+            # Keep the chat running instead of crashing with a traceback.
+            print(f"⚠️  The Claude API returned an error ({type(error).__name__}).")
+            del messages[turn_start:]
 
 
 if __name__ == "__main__":
