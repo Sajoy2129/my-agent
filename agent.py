@@ -1,4 +1,4 @@
-"""Terminal AI agent that can use a calculator tool via the Claude API.
+"""Terminal AI agent that can use calculator and weather tools via the Claude API.
 
 Every step of the agent loop is printed so you can watch it work.
 """
@@ -8,7 +8,10 @@ import json
 import operator
 
 import anthropic
+import requests
 from dotenv import load_dotenv
+
+from weather import get_weather_for_city
 
 MODEL = "claude-opus-5-5"
 MAX_TOKENS = 16000
@@ -16,7 +19,8 @@ MAX_TOOL_ROUNDS = 10  # safety cap so a bug can't loop forever and burn credits
 
 SYSTEM_PROMPT = (
     "You are a helpful terminal assistant. "
-    "Always use the calculator tool for arithmetic instead of doing it in your head."
+    "Always use the calculator tool for arithmetic instead of doing it in your head. "
+    "Use get_weather for any question about current weather or the forecast."
 )
 
 # --- The tool definition: what we tell Claude about the tool -----------------
@@ -43,7 +47,32 @@ CALCULATOR_TOOL = {
     "strict": True,  # guarantees Claude's input matches the schema exactly
 }
 
-TOOLS = [CALCULATOR_TOOL]
+WEATHER_TOOL = {
+    "name": "get_weather",
+    "description": (
+        "Get the current temperature and wind speed, today's high/low, "
+        "and a 3-day forecast for a city."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "city": {
+                "type": "string",
+                "description": "City name, e.g. 'Paris' or 'Tokyo'.",
+            },
+            "unit": {
+                "type": "string",
+                "enum": ["C", "F"],
+                "description": "Temperature unit. Use 'C' unless the user asks for Fahrenheit.",
+            },
+        },
+        "required": ["city", "unit"],
+        "additionalProperties": False,
+    },
+    "strict": True,
+}
+
+TOOLS = [CALCULATOR_TOOL, WEATHER_TOOL]
 
 # --- The tool itself: plain Python, no knowledge of Claude --------------------
 # Maps each allowed syntax-tree node type to the Python function that runs it.
@@ -85,16 +114,34 @@ def _evaluate_node(node):
     raise ValueError(f"Unsupported expression: {ast.dump(node)}")
 
 
+def run_calculator(tool_input):
+    return str(safe_calculate(tool_input["expression"]))
+
+
+def run_get_weather(tool_input):
+    weather = get_weather_for_city(tool_input["city"], tool_input["unit"])
+    return json.dumps(weather)  # tool_result content must be text
+
+
+# Tool name (as Claude sends it) -> the Python function that runs it.
+TOOL_FUNCTIONS = {
+    "calculator": run_calculator,
+    "get_weather": run_get_weather,
+}
+
+
 def run_tool(name, tool_input):
     """Run the tool Claude asked for. Return (result_text, is_error)."""
-    if name != "calculator":
+    tool_function = TOOL_FUNCTIONS.get(name)
+    if tool_function is None:
         return f"Unknown tool: {name}", True
     try:
-        result = safe_calculate(tool_input["expression"])
-        return str(result), False
+        return tool_function(tool_input), False
     except (ValueError, SyntaxError, ZeroDivisionError, KeyError) as error:
         # Send the error back to Claude instead of crashing; it can recover.
         return f"Error: {error}", True
+    except requests.RequestException as error:
+        return f"Error: could not reach the weather service ({error})", True
 
 
 # --- The agent loop -----------------------------------------------------------
@@ -175,7 +222,7 @@ def main():
     client = anthropic.Anthropic()
     messages = []
 
-    print("Calculator agent. Type 'quit' to exit.")
+    print("Agent with calculator + weather tools. Type 'quit' to exit.")
     while True:
         try:
             user_input = input("You: ").strip()
