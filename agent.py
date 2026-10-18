@@ -1,16 +1,16 @@
-"""Terminal AI agent that can use calculator and weather tools via the Claude API.
+"""Terminal AI agent with calculator, weather and to-do tools via the Claude API.
 
 Every step of the agent loop is printed so you can watch it work.
 """
 
-import ast
 import json
-import operator
 
 import anthropic
 import requests
 from dotenv import load_dotenv
 
+from calculator import safe_calculate
+from tasks import add_task, complete_task, list_tasks
 from weather import get_weather_for_city
 
 MODEL = "claude-opus-5-5"
@@ -20,7 +20,8 @@ MAX_TOOL_ROUNDS = 10  # safety cap so a bug can't loop forever and burn credits
 SYSTEM_PROMPT = (
     "You are a helpful terminal assistant. "
     "Always use the calculator tool for arithmetic instead of doing it in your head. "
-    "Use get_weather for any question about current weather or the forecast."
+    "Use get_weather for any question about current weather or the forecast. "
+    "Use list_tasks, add_task and complete_task to manage the user's to-do list."
 )
 
 # --- The tool definition: what we tell Claude about the tool -----------------
@@ -72,48 +73,69 @@ WEATHER_TOOL = {
     "strict": True,
 }
 
-TOOLS = [CALCULATOR_TOOL, WEATHER_TOOL]
-
-# --- The tool itself: plain Python, no knowledge of Claude --------------------
-# Maps each allowed syntax-tree node type to the Python function that runs it.
-BINARY_OPERATORS = {
-    ast.Add: operator.add,
-    ast.Sub: operator.sub,
-    ast.Mult: operator.mul,
-    ast.Div: operator.truediv,
-    ast.FloorDiv: operator.floordiv,
-    ast.Mod: operator.mod,
-    ast.Pow: operator.pow,
+LIST_TASKS_TOOL = {
+    "name": "list_tasks",
+    "description": (
+        "List every task on the user's to-do list, with its id, title "
+        "and whether it is done."
+    ),
+    # No inputs: an object with no properties.
+    "input_schema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": False,
+    },
+    "strict": True,
 }
-UNARY_OPERATORS = {ast.USub: operator.neg, ast.UAdd: operator.pos}
 
+ADD_TASK_TOOL = {
+    "name": "add_task",
+    "description": "Add a new task to the user's to-do list. Returns the new task.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "title": {
+                "type": "string",
+                "description": "Short description of the task, e.g. 'Buy milk'.",
+            }
+        },
+        "required": ["title"],
+        "additionalProperties": False,
+    },
+    "strict": True,
+}
 
-def safe_calculate(expression):
-    """Evaluate arithmetic safely. Raises ValueError for anything that isn't math.
+COMPLETE_TASK_TOOL = {
+    "name": "complete_task",
+    "description": (
+        "Mark a task on the user's to-do list as done, by its id. "
+        "If you only know the task's title, call list_tasks first to find its id."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "task_id": {
+                "type": "integer",
+                "description": "The id of the task to mark as done.",
+            }
+        },
+        "required": ["task_id"],
+        "additionalProperties": False,
+    },
+    "strict": True,
+}
 
-    We never use eval(): it would run *any* Python code Claude sends.
-    Instead we parse the text into a syntax tree and only allow numbers
-    and math operators.
-    """
-    tree = ast.parse(expression, mode="eval")
-    return _evaluate_node(tree.body)
+TOOLS = [
+    CALCULATOR_TOOL,
+    WEATHER_TOOL,
+    LIST_TASKS_TOOL,
+    ADD_TASK_TOOL,
+    COMPLETE_TASK_TOOL,
+]
 
-
-def _evaluate_node(node):
-    """Recursively evaluate one node of the syntax tree."""
-    if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
-        return node.value
-    if isinstance(node, ast.BinOp) and type(node.op) in BINARY_OPERATORS:
-        left = _evaluate_node(node.left)
-        right = _evaluate_node(node.right)
-        if isinstance(node.op, ast.Pow) and abs(right) > 100:
-            raise ValueError("Exponent too large (max 100).")
-        return BINARY_OPERATORS[type(node.op)](left, right)
-    if isinstance(node, ast.UnaryOp) and type(node.op) in UNARY_OPERATORS:
-        return UNARY_OPERATORS[type(node.op)](_evaluate_node(node.operand))
-    raise ValueError(f"Unsupported expression: {ast.dump(node)}")
-
-
+# --- Running tools: connect each tool name to its Python function -----------
+# The tools themselves live in calculator.py, weather.py and tasks.py and
+# know nothing about Claude.
 def run_calculator(tool_input):
     return str(safe_calculate(tool_input["expression"]))
 
@@ -123,10 +145,25 @@ def run_get_weather(tool_input):
     return json.dumps(weather)  # tool_result content must be text
 
 
+def run_list_tasks(tool_input):
+    return json.dumps(list_tasks())
+
+
+def run_add_task(tool_input):
+    return json.dumps(add_task(tool_input["title"]))
+
+
+def run_complete_task(tool_input):
+    return json.dumps(complete_task(tool_input["task_id"]))
+
+
 # Tool name (as Claude sends it) -> the Python function that runs it.
 TOOL_FUNCTIONS = {
     "calculator": run_calculator,
     "get_weather": run_get_weather,
+    "list_tasks": run_list_tasks,
+    "add_task": run_add_task,
+    "complete_task": run_complete_task,
 }
 
 
@@ -222,7 +259,7 @@ def main():
     client = anthropic.Anthropic()
     messages = []
 
-    print("Agent with calculator + weather tools. Type 'quit' to exit.")
+    print("Agent with calculator, weather and to-do tools. Type 'quit' to exit.")
     while True:
         try:
             user_input = input("You: ").strip()
