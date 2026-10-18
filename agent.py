@@ -157,6 +157,10 @@ def run_complete_task(tool_input):
     return json.dumps(complete_task(tool_input["task_id"]))
 
 
+# Tools that change data. These need the user's OK before they run;
+# read-only tools (calculator, get_weather, list_tasks) run straight away.
+TOOLS_NEEDING_APPROVAL = {"add_task", "complete_task"}
+
 # Tool name (as Claude sends it) -> the Python function that runs it.
 TOOL_FUNCTIONS = {
     "calculator": run_calculator,
@@ -197,6 +201,16 @@ def ask_claude(client, messages):
     )
 
 
+def ask_permission():
+    """Ask the user to allow a data-changing tool. Only 'y' or 'yes' allows it."""
+    try:
+        answer = input("     Allow? (y/n): ")
+    except (KeyboardInterrupt, EOFError):
+        print()
+        return False  # when in doubt, don't change data
+    return answer.strip().lower() in ("y", "yes")
+
+
 def handle_tool_calls(response):
     """Run every tool_use block in the response. Return the tool_result blocks."""
     tool_results = []
@@ -207,7 +221,13 @@ def handle_tool_calls(response):
         print(f"     tool_use id: {block.id}")
         print(f"     input:       {json.dumps(block.input)}")
 
-        result_text, is_error = run_tool(block.name, block.input)
+        if block.name in TOOLS_NEEDING_APPROVAL and not ask_permission():
+            # We still must answer this tool_use, so tell Claude what happened.
+            result_text = "The user declined this action. It was not performed."
+            is_error = True
+            print("     🚫 declined")
+        else:
+            result_text, is_error = run_tool(block.name, block.input)
         label = "ERROR returned" if is_error else "result returned"
         print(f"     {label}: {result_text}")
 
