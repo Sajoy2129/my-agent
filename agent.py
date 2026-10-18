@@ -183,6 +183,10 @@ def run_tool(name, tool_input):
         return f"Error: {error}", True
     except requests.RequestException as error:
         return f"Error: could not reach the weather service ({error})", True
+    except Exception as error:
+        # Last resort for anything we didn't expect (e.g. OverflowError):
+        # one broken tool call shouldn't crash the whole agent.
+        return f"Error: unexpected {type(error).__name__}: {error}", True
 
 
 # --- The agent loop -----------------------------------------------------------
