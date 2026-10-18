@@ -1,4 +1,4 @@
-"""Terminal AI agent with calculator, weather and to-do tools via the Claude API.
+"""Terminal AI agent with calculator, weather, to-do and expenses tools (Claude API).
 
 Every step of the agent loop is printed so you can watch it work.
 """
@@ -10,6 +10,7 @@ import requests
 from dotenv import load_dotenv
 
 from calculator import safe_calculate
+from expenses import summarize_expenses
 from tasks import add_task, complete_task, list_tasks
 from weather import get_weather_for_city
 
@@ -21,7 +22,8 @@ SYSTEM_PROMPT = (
     "You are a helpful terminal assistant. "
     "Always use the calculator tool for arithmetic instead of doing it in your head. "
     "Use get_weather for any question about current weather or the forecast. "
-    "Use list_tasks, add_task and complete_task to manage the user's to-do list."
+    "Use list_tasks, add_task and complete_task to manage the user's to-do list. "
+    "Use expenses_summary for questions about the user's spending."
 )
 
 # --- The tool definition: what we tell Claude about the tool -----------------
@@ -125,12 +127,54 @@ COMPLETE_TASK_TOOL = {
     "strict": True,
 }
 
+EXPENSES_SUMMARY_TOOL = {
+    "name": "expenses_summary",
+    "description": (
+        "Summarize the user's personal expenses from their expenses.csv file. "
+        "Use this whenever the user asks how much they spent, what they spend "
+        "the most on, or about spending in a category or month. "
+        "Returns the total spent (summary_type 'total') or the total for each "
+        "category, sorted from highest to lowest (summary_type 'by_category'). "
+        "Set month to limit the summary to one month, or null for all expenses. "
+        "The result also lists available_months, the months that have data. "
+        "Amounts are plain numbers with no currency; don't add a currency "
+        "symbol unless the user has told you which currency they use. "
+        "This tool is read-only: it never changes the file. "
+        "It cannot list individual expenses or add new ones."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "summary_type": {
+                "type": "string",
+                "enum": ["total", "by_category"],
+                "description": (
+                    "'total' for one overall number; 'by_category' for a "
+                    "breakdown per category (also includes the overall total)."
+                ),
+            },
+            "month": {
+                "type": ["string", "null"],
+                "description": (
+                    "Month to summarize in YYYY-MM format, e.g. '2026-09'. "
+                    "Use null to include all expenses. If the user names a month "
+                    "without a year, assume the most recent one in available_months."
+                ),
+            },
+        },
+        "required": ["summary_type", "month"],
+        "additionalProperties": False,
+    },
+    "strict": True,
+}
+
 TOOLS = [
     CALCULATOR_TOOL,
     WEATHER_TOOL,
     LIST_TASKS_TOOL,
     ADD_TASK_TOOL,
     COMPLETE_TASK_TOOL,
+    EXPENSES_SUMMARY_TOOL,
 ]
 
 # --- Running tools: connect each tool name to its Python function -----------
@@ -157,8 +201,14 @@ def run_complete_task(tool_input):
     return json.dumps(complete_task(tool_input["task_id"]))
 
 
+def run_expenses_summary(tool_input):
+    summary = summarize_expenses(tool_input["summary_type"], tool_input["month"])
+    return json.dumps(summary)
+
+
 # Tools that change data. These need the user's OK before they run;
-# read-only tools (calculator, get_weather, list_tasks) run straight away.
+# read-only tools (calculator, get_weather, list_tasks, expenses_summary)
+# run straight away.
 TOOLS_NEEDING_APPROVAL = {"add_task", "complete_task"}
 
 # Tool name (as Claude sends it) -> the Python function that runs it.
@@ -168,6 +218,7 @@ TOOL_FUNCTIONS = {
     "list_tasks": run_list_tasks,
     "add_task": run_add_task,
     "complete_task": run_complete_task,
+    "expenses_summary": run_expenses_summary,
 }
 
 
@@ -283,7 +334,7 @@ def main():
     client = anthropic.Anthropic()
     messages = []
 
-    print("Agent with calculator, weather and to-do tools. Type 'quit' to exit.")
+    print("Agent with calculator, weather, to-do and expenses tools. Type 'quit' to exit.")
     while True:
         try:
             user_input = input("You: ").strip()
